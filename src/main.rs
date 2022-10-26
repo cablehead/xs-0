@@ -39,10 +39,7 @@ enum Commands {
     },
 }
 
-fn put_one(
-    conn: &sqlite::Connection,
-    data: String,
-) {
+fn put_one(conn: &sqlite::Connection, data: String) {
     let stamp: Vec<u8> = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -68,8 +65,10 @@ fn put_one(
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Frame {
-    topic: String,
-    attribute: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    topic: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    attribute: Option<String>,
     data: String,
 }
 
@@ -88,15 +87,12 @@ fn main() {
         CREATE TABLE IF NOT EXISTS stream (
         id INTEGER PRIMARY KEY,
         frame TEXT NOT NULL,
-        stamp TEXT NOT NULL,
+        stamp TEXT NOT NULL
     )",
     )
     .unwrap();
     match &args.command {
-        Commands::Put {
-            topic,
-            attribute,
-        } => {
+        Commands::Put { topic, attribute } => {
             /*
             if *follow {
                 for line in std::io::stdin().lock().lines() {
@@ -149,7 +145,7 @@ fn main() {
             let mut data = String::new();
             std::io::stdin().read_to_string(&mut data).unwrap();
 
-            put_one(&conn, data);
+            run_put(data, topic.clone(), attribute.clone());
         }
 
         Commands::Cat {
@@ -256,11 +252,32 @@ fn parse_sse<R: Read>(buf: &mut BufReader<R>) -> Option<Event> {
     });
 }
 
+fn run_put(data: String, topic: Option<String>, attribute: Option<String>) {
+    /*
+    let mut data = String::new();
+    std::io::stdin().read_to_string(&mut data).unwrap();
+    */
+
+    let frame = Frame {
+        topic: topic.clone(),
+        attribute: attribute.clone(),
+        data: data,
+    };
+
+    println!("{:?}", frame);
+    // put_one(&conn, data);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use indoc::indoc;
     // use pretty_assertions::assert_eq;
+
+    #[test]
+    fn test_put() {
+        run_put("foo".into(), None, None);
+    }
 
     #[test]
     fn test_parse_sse() {
