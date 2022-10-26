@@ -40,25 +40,23 @@ enum Commands {
 }
 
 fn put_one(conn: &sqlite::Connection, data: String) {
-    let stamp: Vec<u8> = SystemTime::now()
+    let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis()
-        .to_le_bytes()
-        .try_into()
-        .unwrap();
+        .to_string();
 
     let data = data.trim();
     let mut q = conn
         .prepare(
             "INSERT INTO stream (
-                data, stamp
+                frame, stamp
            ) VALUES (?, ?)",
         )
         .unwrap()
-        .bind(6, data.as_bytes())
+        .bind(1, data)
         .unwrap()
-        .bind(7, &*stamp)
+        .bind(2, &*stamp)
         .unwrap();
     q.next().unwrap();
 }
@@ -145,7 +143,7 @@ fn main() {
             let mut data = String::new();
             std::io::stdin().read_to_string(&mut data).unwrap();
 
-            run_put(data, topic.clone(), attribute.clone());
+            run_put(&conn, data, topic.clone(), attribute.clone());
         }
 
         Commands::Cat {
@@ -252,7 +250,24 @@ fn parse_sse<R: Read>(buf: &mut BufReader<R>) -> Option<Event> {
     });
 }
 
-fn run_put(data: String, topic: Option<String>, attribute: Option<String>) {
+fn store_create(conn: &sqlite::Connection) {
+    conn.execute(
+        "
+        CREATE TABLE IF NOT EXISTS stream (
+        id INTEGER PRIMARY KEY,
+        frame TEXT NOT NULL,
+        stamp TEXT NOT NULL
+    )",
+    )
+    .unwrap();
+}
+
+fn run_put(
+    conn: &sqlite::Connection,
+    data: String,
+    topic: Option<String>,
+    attribute: Option<String>,
+) {
     /*
     let mut data = String::new();
     std::io::stdin().read_to_string(&mut data).unwrap();
@@ -264,8 +279,8 @@ fn run_put(data: String, topic: Option<String>, attribute: Option<String>) {
         data: data,
     };
 
-    println!("{:?}", frame);
-    // put_one(&conn, data);
+    let data = serde_json::to_string(&frame).unwrap();
+    put_one(&conn, data);
 }
 
 #[cfg(test)]
@@ -276,7 +291,9 @@ mod tests {
 
     #[test]
     fn test_put() {
-        run_put("foo".into(), None, None);
+        let conn = sqlite::open(":memory:").unwrap();
+        store_create(&conn);
+        run_put(&conn, "foo".into(), None, None);
     }
 
     #[test]
