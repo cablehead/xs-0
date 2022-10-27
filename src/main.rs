@@ -1,7 +1,7 @@
 use std::io::BufRead;
 use std::io::BufReader;
 use std::io::Read;
-use std::io::Write;
+// use std::io::Write;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -143,7 +143,7 @@ fn main() {
             let mut data = String::new();
             std::io::stdin().read_to_string(&mut data).unwrap();
 
-            run_put(&conn, data, topic.clone(), attribute.clone());
+            command_put(&conn, data, topic.clone(), attribute.clone());
         }
 
         Commands::Cat {
@@ -172,12 +172,6 @@ fn main() {
                     .unwrap();
                 while let sqlite::State::Row = q.next().unwrap() {
                     last_id = q.read(0).unwrap();
-
-                    let stamp = q.read::<Vec<u8>>(5).unwrap();
-                    let stamp = match stamp.len() {
-                        0 => 0,
-                        _ => u128::from_le_bytes(stamp.try_into().unwrap()),
-                    };
 
                     let row = Row {
                         id: last_id,
@@ -262,7 +256,7 @@ fn store_create(conn: &sqlite::Connection) {
     .unwrap();
 }
 
-fn run_put(
+fn command_put(
     conn: &sqlite::Connection,
     data: String,
     topic: Option<String>,
@@ -290,10 +284,10 @@ mod tests {
     // use pretty_assertions::assert_eq;
 
     #[test]
-    fn test_put() {
+    fn test_command_put() {
         let conn = sqlite::open(":memory:").unwrap();
         store_create(&conn);
-        run_put(&conn, "foo".into(), None, None);
+        command_put(&conn, "foo".into(), None, None);
     }
 
     #[test]
