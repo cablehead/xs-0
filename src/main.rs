@@ -128,45 +128,27 @@ fn main() {
             sse,
             last_id,
         } => {
-            let mut last_id = last_id.unwrap_or(0);
-
             // send a comment to establish the connection
             if *sse {
                 println!(": welcome");
             }
 
+            let mut last_id = last_id.unwrap_or(0);
+
             loop {
-                let mut q = conn
-                    .prepare(
-                        "SELECT
-                            id, data, stamp
-                        FROM stream
-                        WHERE id > ?
-                        ORDER BY id ASC",
-                    )
-                    .unwrap()
-                    .bind(1, last_id)
-                    .unwrap();
-                while let sqlite::State::Row = q.next().unwrap() {
-                    last_id = q.read(0).unwrap();
-
-                    let row = Row {
-                        id: last_id,
-                        frame: q.read::<String>(1).unwrap(),
-                        stamp: q.read::<String>(2).unwrap(),
-                    };
-
+                let rows = command_cat(&conn, last_id);
+                for row in &rows {
                     let data = serde_json::to_string(&row).unwrap();
-
                     match sse {
                         true => {
                             println!("id: {}", row.id);
-                            let data = data.trim().replace("\n", "\ndata: ");
+                            // let data = row.data.trim().replace("\n", "\ndata: ");
                             println!("data: {}\n", data);
                         }
 
                         false => println!("{}", data),
                     }
+                    last_id = row.id;
                 }
                 if !follow {
                     break;
@@ -239,19 +221,11 @@ fn command_put(
     topic: Option<String>,
     attribute: Option<String>,
 ) {
-    /*
-    let mut data = String::new();
-    std::io::stdin().read_to_string(&mut data).unwrap();
-    */
-
-    let data = data.trim();
-
     let frame = Frame {
         topic: topic.clone(),
         attribute: attribute.clone(),
-        data: data.to_string(),
+        data: data.trim().to_string(),
     };
-
     let frame = serde_json::to_string(&frame).unwrap();
 
     let stamp = SystemTime::now()
@@ -272,6 +246,32 @@ fn command_put(
         .bind(2, &*stamp)
         .unwrap();
     q.next().unwrap();
+}
+
+fn command_cat(conn: &sqlite::Connection, last_id: i64) -> Vec<Row> {
+    // cat should return an iterator
+    let mut ret = Vec::<Row>::new();
+    let mut q = conn
+        .prepare(
+            "SELECT
+                    id, frame, stamp
+                FROM stream
+                WHERE id > ?
+                ORDER BY id ASC",
+        )
+        .unwrap()
+        .bind(1, last_id)
+        .unwrap();
+    while let sqlite::State::Row = q.next().unwrap() {
+        let row = Row {
+            id: q.read(0).unwrap(),
+            frame: q.read::<String>(1).unwrap(),
+            stamp: q.read::<String>(2).unwrap(),
+        };
+        ret.push(row);
+    }
+
+    return ret;
 }
 
 #[cfg(test)]
