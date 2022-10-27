@@ -281,10 +281,12 @@ mod tests {
     // use pretty_assertions::assert_eq;
 
     #[test]
-    fn test_store_put() {
+    fn test_store() {
         let conn = sqlite::open(":memory:").unwrap();
         store_create(&conn);
         store_put(&conn, "foo".into(), None, None);
+        let rows = store_cat(&conn, 0);
+        println!("{:?}", rows);
     }
 
     #[test]
