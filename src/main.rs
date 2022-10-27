@@ -39,28 +39,6 @@ enum Commands {
     },
 }
 
-fn put_one(conn: &sqlite::Connection, data: String) {
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis()
-        .to_string();
-
-    let data = data.trim();
-    let mut q = conn
-        .prepare(
-            "INSERT INTO stream (
-                frame, stamp
-           ) VALUES (?, ?)",
-        )
-        .unwrap()
-        .bind(1, data)
-        .unwrap()
-        .bind(2, &*stamp)
-        .unwrap();
-    q.next().unwrap();
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 struct Frame {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -142,7 +120,6 @@ fn main() {
 
             let mut data = String::new();
             std::io::stdin().read_to_string(&mut data).unwrap();
-
             command_put(&conn, data, topic.clone(), attribute.clone());
         }
 
@@ -267,14 +244,34 @@ fn command_put(
     std::io::stdin().read_to_string(&mut data).unwrap();
     */
 
+    let data = data.trim();
+
     let frame = Frame {
         topic: topic.clone(),
         attribute: attribute.clone(),
-        data: data,
+        data: data.to_string(),
     };
 
-    let data = serde_json::to_string(&frame).unwrap();
-    put_one(&conn, data);
+    let frame = serde_json::to_string(&frame).unwrap();
+
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+        .to_string();
+
+    let mut q = conn
+        .prepare(
+            "INSERT INTO stream (
+                frame, stamp
+           ) VALUES (?, ?)",
+        )
+        .unwrap()
+        .bind(1, &*frame)
+        .unwrap()
+        .bind(2, &*stamp)
+        .unwrap();
+    q.next().unwrap();
 }
 
 #[cfg(test)]
