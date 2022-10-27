@@ -120,7 +120,7 @@ fn main() {
 
             let mut data = String::new();
             std::io::stdin().read_to_string(&mut data).unwrap();
-            command_put(&conn, data, topic.clone(), attribute.clone());
+            store_put(&conn, data, topic.clone(), attribute.clone());
         }
 
         Commands::Cat {
@@ -136,7 +136,7 @@ fn main() {
             let mut last_id = last_id.unwrap_or(0);
 
             loop {
-                let rows = command_cat(&conn, last_id);
+                let rows = store_cat(&conn, last_id);
                 for row in &rows {
                     let data = serde_json::to_string(&row).unwrap();
                     match sse {
@@ -215,7 +215,7 @@ fn store_create(conn: &sqlite::Connection) {
     .unwrap();
 }
 
-fn command_put(
+fn store_put(
     conn: &sqlite::Connection,
     data: String,
     topic: Option<String>,
@@ -248,7 +248,7 @@ fn command_put(
     q.next().unwrap();
 }
 
-fn command_cat(conn: &sqlite::Connection, last_id: i64) -> Vec<Row> {
+fn store_cat(conn: &sqlite::Connection, last_id: i64) -> Vec<Row> {
     // cat should return an iterator
     let mut ret = Vec::<Row>::new();
     let mut q = conn
@@ -281,10 +281,10 @@ mod tests {
     // use pretty_assertions::assert_eq;
 
     #[test]
-    fn test_command_put() {
+    fn test_store_put() {
         let conn = sqlite::open(":memory:").unwrap();
         store_create(&conn);
-        command_put(&conn, "foo".into(), None, None);
+        store_put(&conn, "foo".into(), None, None);
     }
 
     #[test]
