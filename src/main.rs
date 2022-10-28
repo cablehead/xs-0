@@ -57,16 +57,10 @@ struct Row {
 
 fn main() {
     let args = Args::parse();
+
     let conn = sqlite::open(&args.path).unwrap();
-    conn.execute(
-        "
-        CREATE TABLE IF NOT EXISTS stream (
-        id INTEGER PRIMARY KEY,
-        frame TEXT NOT NULL,
-        stamp TEXT NOT NULL
-    )",
-    )
-    .unwrap();
+    store_create(&conn);
+
     match &args.command {
         Commands::Put { topic, attribute } => {
             /*
