@@ -51,7 +51,7 @@ struct Frame {
 #[derive(Debug, Serialize, Deserialize)]
 struct Row {
     id: i64,
-    frame: String,
+    frame: Frame,
     stamp: String,
 }
 
@@ -262,10 +262,13 @@ fn store_cat(conn: &sqlite::Connection, last_id: i64) -> Vec<Row> {
         .unwrap()
         .bind(1, last_id)
         .unwrap();
+
     while let sqlite::State::Row = q.next().unwrap() {
+        let frame = q.read::<String>(1).unwrap();
+        let frame: Frame = serde_json::from_str(&frame).unwrap();
         let row = Row {
             id: q.read(0).unwrap(),
-            frame: q.read::<String>(1).unwrap(),
+            frame: frame,
             stamp: q.read::<String>(2).unwrap(),
         };
         ret.push(row);
@@ -286,7 +289,7 @@ mod tests {
         store_create(&conn);
         store_put(&conn, "foo".into(), None, None);
         let rows = store_cat(&conn, 0);
-        println!("{:?}", rows);
+        assert_eq!(rows.len(), 1);
     }
 
     #[test]
