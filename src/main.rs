@@ -204,7 +204,7 @@ fn store_create(conn: &sqlite::Connection) {
         id INTEGER PRIMARY KEY,
         frame TEXT NOT NULL,
         stamp TEXT NOT NULL
-    )",
+        )",
     )
     .unwrap();
 }
