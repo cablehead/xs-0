@@ -68,55 +68,6 @@ fn main() {
 
     match &args.command {
         Commands::Put { topic, attribute } => {
-            /*
-            if *follow {
-                for line in std::io::stdin().lock().lines() {
-                    put_one(&conn, None, None, None, &None, &None, line.unwrap());
-                }
-                return;
-            }
-            */
-
-            /*
-            if let Some(sse) = sse {
-                if *last_id {
-                    let mut q = conn
-                        .prepare(
-                            "
-                            SELECT source_id
-                            FROM stream
-                            WHERE source = ?
-                            ORDER BY id DESC
-                            LIMIT 1",
-                        )
-                        .unwrap()
-                        .bind(1, sse.as_bytes())
-                        .unwrap();
-                    if let sqlite::State::Done = q.next().unwrap() {
-                        println!("0");
-                        return;
-                    }
-                    let id = q.read::<i64>(0).unwrap();
-                    println!("{}", id);
-                    return;
-                }
-
-                let mut stdin = BufReader::new(std::io::stdin());
-                while let Some(event) = parse_sse(&mut stdin) {
-                    put_one(
-                        &conn,
-                        event.id,
-                        Some(sse.to_string()),
-                        None,
-                        &None,
-                        &None,
-                        event.data,
-                    );
-                }
-                return;
-            }
-            */
-
             let mut data = String::new();
             std::io::stdin().read_to_string(&mut data).unwrap();
             println!(
