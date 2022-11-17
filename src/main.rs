@@ -139,7 +139,7 @@ fn main() {
 
             loop {
                 let rows = store_cat(&conn, last_id);
-                for row in &rows {
+                for row in rows {
                     let data = serde_json::to_string(&row).unwrap();
                     match sse {
                         true => {
@@ -260,7 +260,7 @@ fn store_put(
     return id;
 }
 
-fn store_cat(conn: &sqlite::Connection, last_id: i64) -> Vec<Row> {
+fn store_cat(conn: &sqlite::Connection, last_id: i64) -> impl Iterator<Item = Row> + '_ {
     let cur = conn
         .prepare(
             "SELECT
@@ -283,7 +283,7 @@ fn store_cat(conn: &sqlite::Connection, last_id: i64) -> Vec<Row> {
             frame: frame,
             stamp: r.get::<String, _>(2),
         }
-    }).collect()
+    })
 }
 
 #[cfg(test)]
@@ -299,7 +299,7 @@ mod tests {
         let id = store_put(&conn, "foo".into(), None, None);
         assert_eq!(id, 1);
         let rows = store_cat(&conn, 0);
-        assert_eq!(rows.len(), 1);
+        assert_eq!(rows.count(), 1);
     }
 
     #[test]
