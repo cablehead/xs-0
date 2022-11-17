@@ -247,10 +247,14 @@ mod tests {
     fn test_store() {
         let conn = sqlite::open(":memory:").unwrap();
         store_create(&conn);
+
         let id = store_put(&conn, "foo".into(), None, None);
         assert_eq!(id, 1);
-        let rows = store_cat(&conn, 0);
-        assert_eq!(rows.count(), 1);
+
+        assert_eq!(store_cat(&conn, 0).count(), 1);
+
+        // skip with last_id
+        assert_eq!(store_cat(&conn, 1).count(), 0);
     }
 
     #[test]
