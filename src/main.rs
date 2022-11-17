@@ -37,6 +37,11 @@ enum Commands {
         #[clap(short, long, value_parser)]
         last_id: Option<i64>,
     },
+
+    Call {
+        #[clap(long, value_parser)]
+        topic: Option<String>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -114,7 +119,10 @@ fn main() {
 
             let mut data = String::new();
             std::io::stdin().read_to_string(&mut data).unwrap();
-            println!("{}", store_put(&conn, data, topic.clone(), attribute.clone()));
+            println!(
+                "{}",
+                store_put(&conn, data, topic.clone(), attribute.clone())
+            );
         }
 
         Commands::Cat {
@@ -149,6 +157,12 @@ fn main() {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
+        }
+
+        Commands::Call { topic } => {
+            let mut data = String::new();
+            std::io::stdin().read_to_string(&mut data).unwrap();
+            let _id = store_put(&conn, data, topic.clone(), Some(".request".into()));
         }
     }
 }
