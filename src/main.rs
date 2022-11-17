@@ -261,9 +261,7 @@ fn store_put(
 }
 
 fn store_cat(conn: &sqlite::Connection, last_id: i64) -> Vec<Row> {
-    // cat should return an iterator
-    let mut ret = Vec::<Row>::new();
-    let mut cur = conn
+    let cur = conn
         .prepare(
             "SELECT
                     id, frame, stamp
@@ -276,18 +274,16 @@ fn store_cat(conn: &sqlite::Connection, last_id: i64) -> Vec<Row> {
         .unwrap()
         .into_cursor();
 
-    while let Some(Ok(r)) = cur.next() {
+    cur.map(|r| {
+        let r = r.unwrap();
         let frame = r.get::<String, _>(1);
         let frame: Frame = serde_json::from_str(&frame).unwrap();
-        let row = Row {
+        Row {
             id: r.get::<i64, _>(0),
             frame: frame,
             stamp: r.get::<String, _>(2),
-        };
-        ret.push(row);
-    }
-
-    return ret;
+        }
+    }).collect()
 }
 
 #[cfg(test)]
