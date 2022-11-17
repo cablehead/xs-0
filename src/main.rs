@@ -114,7 +114,7 @@ fn main() {
 
             let mut data = String::new();
             std::io::stdin().read_to_string(&mut data).unwrap();
-            store_put(&conn, data, topic.clone(), attribute.clone());
+            println!("{}", store_put(&conn, data, topic.clone(), attribute.clone()));
         }
 
         Commands::Cat {
@@ -214,7 +214,7 @@ fn store_put(
     data: String,
     topic: Option<String>,
     attribute: Option<String>,
-) {
+) -> i64 {
     let frame = Frame {
         topic: topic.clone(),
         attribute: attribute.clone(),
@@ -230,16 +230,20 @@ fn store_put(
 
     let mut q = conn
         .prepare(
-            "INSERT INTO stream (
-                frame, stamp
-           ) VALUES (?, ?)",
+            "INSERT INTO stream (frame, stamp)
+             VALUES (?, ?)
+             RETURNING id;",
         )
         .unwrap()
         .bind(1, &*frame)
         .unwrap()
         .bind(2, &*stamp)
         .unwrap();
-    q.next().unwrap();
+
+    assert_eq!(q.next().unwrap(), sqlite::State::Row);
+    let id = q.read::<i64>(0).unwrap();
+    assert_eq!(q.next().unwrap(), sqlite::State::Done);
+    return id;
 }
 
 fn store_cat(conn: &sqlite::Connection, last_id: i64) -> Vec<Row> {
@@ -281,7 +285,8 @@ mod tests {
     fn test_store() {
         let conn = sqlite::open(":memory:").unwrap();
         store_create(&conn);
-        store_put(&conn, "foo".into(), None, None);
+        let id = store_put(&conn, "foo".into(), None, None);
+        assert_eq!(id, 1);
         let rows = store_cat(&conn, 0);
         assert_eq!(rows.len(), 1);
     }
