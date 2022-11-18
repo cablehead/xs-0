@@ -40,7 +40,7 @@ enum Commands {
 
     Call {
         #[clap(long, value_parser)]
-        topic: Option<String>,
+        topic: String,
     },
 }
 
@@ -50,6 +50,12 @@ struct Frame {
     topic: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     attribute: Option<String>,
+    data: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ResponseFrame {
+    source_id: i64,
     data: String,
 }
 
@@ -86,34 +92,40 @@ fn main() {
                 println!(": welcome");
             }
 
-            let mut last_id = last_id.unwrap_or(0);
+            let last_id = last_id.unwrap_or(0);
 
-            loop {
-                let rows = store_cat(&conn, last_id);
-                for row in rows {
-                    let data = serde_json::to_string(&row).unwrap();
-                    match sse {
-                        true => {
-                            println!("id: {}", row.id);
-                            // let data = row.data.trim().replace("\n", "\ndata: ");
-                            println!("data: {}\n", data);
-                        }
+            let rows = store_cat(conn, last_id, *follow);
 
-                        false => println!("{}", data),
+            for row in rows {
+                let data = serde_json::to_string(&row).unwrap();
+                match sse {
+                    true => {
+                        println!("id: {}", row.id);
+                        // let data = row.data.trim().replace("\n", "\ndata: ");
+                        println!("data: {}\n", data);
                     }
-                    last_id = row.id;
+
+                    false => println!("{}", data),
                 }
-                if !follow {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
             }
         }
 
         Commands::Call { topic } => {
             let mut data = String::new();
             std::io::stdin().read_to_string(&mut data).unwrap();
-            let _id = store_put(&conn, data, topic.clone(), Some(".request".into()));
+            let id = store_put(&conn, data, Some(topic.clone()), Some(".request".into()));
+            let rows = store_cat(conn, id, true);
+            let rows = rows.iter().filter(|row| {
+                row.frame.topic == Some(topic.to_string())
+                    && row.frame.attribute == Some(".response".into())
+            });
+            for row in rows {
+                let response: ResponseFrame = serde_json::from_str(&row.frame.data).unwrap();
+                if response.source_id == id {
+                    println!("{}", response.data);
+                }
+                break;
+            }
         }
     }
 }
@@ -211,7 +223,7 @@ fn store_put(
     return id;
 }
 
-fn store_cat(conn: &sqlite::Connection, last_id: i64) -> impl Iterator<Item = Row> + '_ {
+fn store_cat_poll(conn: &sqlite::Connection, last_id: i64) -> impl Iterator<Item = Row> + '_ {
     let cur = conn
         .prepare(
             "SELECT
@@ -237,6 +249,39 @@ fn store_cat(conn: &sqlite::Connection, last_id: i64) -> impl Iterator<Item = Ro
     })
 }
 
+fn store_cat(
+    conn: sqlite::Connection,
+    last_id: i64,
+    follow: bool,
+) -> std::sync::mpsc::Receiver<Row> {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Row>(0);
+    std::thread::spawn(move || {
+        let mut last_id = last_id;
+        let mut empty_count = 0;
+        loop {
+            let rows = store_cat_poll(&conn, last_id);
+            let mut empty = true;
+            for row in rows {
+                empty = false;
+                last_id = row.id;
+                if tx.send(row).is_err() {
+                    return;
+                }
+            }
+            if !follow {
+                break;
+            }
+            empty_count = if empty { empty_count + 1 } else { 0 };
+            std::thread::sleep(std::time::Duration::from_millis(if empty_count > 500 {
+                100
+            } else {
+                10
+            }));
+        }
+    });
+    rx
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,10 +296,40 @@ mod tests {
         let id = store_put(&conn, "foo".into(), None, None);
         assert_eq!(id, 1);
 
-        assert_eq!(store_cat(&conn, 0).count(), 1);
+        assert_eq!(store_cat_poll(&conn, 0).count(), 1);
 
         // skip with last_id
-        assert_eq!(store_cat(&conn, 1).count(), 0);
+        assert_eq!(store_cat_poll(&conn, 1).count(), 0);
+    }
+
+    #[test]
+    fn test_store_cat_follow() {
+        let db_uri = "file:1?mode=memory&cache=shared";
+        let conn = sqlite::open(db_uri).unwrap();
+        store_create(&conn);
+        let rx = store_cat(conn, 0, true);
+
+        let conn = sqlite::open(db_uri).unwrap();
+        let id = store_put(&conn, "foo".into(), None, None);
+        assert_eq!(id, 1);
+        assert_eq!(rx.recv().unwrap().id, 1);
+
+        // no updates
+        assert!(rx
+            .recv_timeout(std::time::Duration::from_millis(20))
+            .is_err());
+
+        // an update
+        let id = store_put(&conn, "foo".into(), None, None);
+        assert_eq!(id, 2);
+        assert_eq!(rx.recv().unwrap().id, 2);
+
+        // check sender cleanly stops
+        drop(rx);
+
+        let id = store_put(&conn, "foo".into(), None, None);
+        assert_eq!(id, 3);
+        std::thread::sleep(std::time::Duration::from_millis(20));
     }
 
     #[test]
