@@ -1,13 +1,19 @@
 use std::io::BufRead;
 use std::io::BufReader;
 use std::io::Read;
-// use std::io::Write;
+use std::io::Write;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 use clap::{AppSettings, Parser, Subcommand};
+
+// POLL_INTERVAL is the number of milliseconds to wait between polls when watching for
+// additions to the stream
+// todo: This polling is terrible for multi-process contention, and makes request/response
+// unusably slow: need find a way to get an event when database is updated..
+const POLL_INTERVAL: u64 = 100;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -42,6 +48,15 @@ enum Commands {
         #[clap(long, value_parser)]
         topic: String,
     },
+
+    Serve {
+        #[clap(long, value_parser)]
+        topic: String,
+        #[clap(value_parser)]
+        command: String,
+        #[clap(value_parser)]
+        args: Vec<String>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -67,12 +82,12 @@ struct Row {
 }
 
 fn main() {
-    let args = Args::parse();
+    let params = Args::parse();
 
-    let conn = sqlite::open(&args.path).unwrap();
+    let conn = sqlite::open(&params.path).unwrap();
     store_create(&conn);
 
-    match &args.command {
+    match &params.command {
         Commands::Put { topic, attribute } => {
             let mut data = String::new();
             std::io::stdin().read_to_string(&mut data).unwrap();
@@ -125,6 +140,57 @@ fn main() {
                     println!("{}", response.data);
                 }
                 break;
+            }
+        }
+
+        Commands::Serve {
+            topic,
+            command,
+            args,
+        } => {
+            let last_id = store_cat_poll(&conn, 0)
+                .filter(|row| {
+                    row.frame.topic == Some(topic.to_string())
+                        && row.frame.attribute == Some(".response".into())
+                })
+                .last()
+                .and_then(|row| {
+                    Some(
+                        serde_json::from_str::<ResponseFrame>(&row.frame.data)
+                            .unwrap()
+                            .source_id,
+                    )
+                })
+                .unwrap_or(0);
+
+            let rows = store_cat(conn, last_id, true);
+            let rows = rows.iter().filter(|row| {
+                row.frame.topic == Some(topic.to_string())
+                    && row.frame.attribute == Some(".request".into())
+            });
+
+            // grab a new connection to use for writes
+            let conn = sqlite::open(&params.path).unwrap();
+
+            for row in rows {
+                let mut p = std::process::Command::new(command)
+                    .args(args)
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .spawn()
+                    .expect("failed to spawn");
+                {
+                    let mut stdin = p.stdin.take().expect("failed to take stdin");
+                    stdin.write_all(row.frame.data.as_bytes()).unwrap();
+                }
+                let res = p.wait_with_output().unwrap();
+                let data = String::from_utf8(res.stdout).unwrap();
+                let res = ResponseFrame {
+                    source_id: row.id,
+                    data: data,
+                };
+                let data = serde_json::to_string(&res).unwrap();
+                let _ = store_put(&conn, data, Some(topic.clone()), Some(".response".into()));
             }
         }
     }
@@ -224,6 +290,9 @@ fn store_put(
 }
 
 fn store_cat_poll(conn: &sqlite::Connection, last_id: i64) -> impl Iterator<Item = Row> + '_ {
+    // todo:
+    // `Result::unwrap()` on an `Err` value: Error {
+    //     code: Some(5), message: Some("database is locked") }',
     let cur = conn
         .prepare(
             "SELECT
@@ -257,12 +326,9 @@ fn store_cat(
     let (tx, rx) = std::sync::mpsc::sync_channel::<Row>(0);
     std::thread::spawn(move || {
         let mut last_id = last_id;
-        let mut empty_count = 0;
         loop {
             let rows = store_cat_poll(&conn, last_id);
-            let mut empty = true;
             for row in rows {
-                empty = false;
                 last_id = row.id;
                 if tx.send(row).is_err() {
                     return;
@@ -271,12 +337,7 @@ fn store_cat(
             if !follow {
                 break;
             }
-            empty_count = if empty { empty_count + 1 } else { 0 };
-            std::thread::sleep(std::time::Duration::from_millis(if empty_count > 500 {
-                100
-            } else {
-                10
-            }));
+            std::thread::sleep(std::time::Duration::from_millis(POLL_INTERVAL));
         }
     });
     rx
