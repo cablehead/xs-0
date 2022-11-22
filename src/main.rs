@@ -231,7 +231,10 @@ fn parse_sse<R: Read>(buf: &mut BufReader<R>) -> Option<Event> {
 
 fn store_open(path: &std::path::Path) -> lmdb::Environment {
     std::fs::create_dir_all(path).unwrap();
-    let env = lmdb::Environment::new().open(path).unwrap();
+    let env = lmdb::Environment::new()
+        .set_map_size(10 * 10485760)
+        .open(path)
+        .unwrap();
     return env;
 }
 
