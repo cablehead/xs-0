@@ -128,7 +128,7 @@ fn main() {
             for frame in frames {
                 let response: ResponseFrame = serde_json::from_str(&frame.data).unwrap();
                 if response.source_id == id {
-                    println!("{}", response.data);
+                    print!("{}", response.data);
                 }
                 break;
             }
