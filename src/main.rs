@@ -3,17 +3,17 @@ use std::io::BufReader;
 use std::io::Read;
 use std::io::Write;
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use serde::{Deserialize, Serialize};
+
+use lmdb::Cursor;
+use lmdb::Transaction;
 
 use clap::{AppSettings, Parser, Subcommand};
 
 // POLL_INTERVAL is the number of milliseconds to wait between polls when watching for
 // additions to the stream
-// todo: This polling is terrible for multi-process contention, and makes request/response
-// unusably slow: need find a way to get an event when database is updated..
-const POLL_INTERVAL: u64 = 100;
+// todo: investigate switching to: https://docs.rs/notify/latest/notify/
+const POLL_INTERVAL: u64 = 5;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -41,7 +41,7 @@ enum Commands {
         #[clap(long, action)]
         sse: bool,
         #[clap(short, long, value_parser)]
-        last_id: Option<i64>,
+        last_id: Option<scru128::Scru128Id>,
     },
 
     Call {
@@ -61,6 +61,7 @@ enum Commands {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Frame {
+    id: scru128::Scru128Id,
     #[serde(skip_serializing_if = "Option::is_none")]
     topic: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -70,22 +71,13 @@ struct Frame {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ResponseFrame {
-    source_id: i64,
+    source_id: scru128::Scru128Id,
     data: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct Row {
-    id: i64,
-    frame: Frame,
-    stamp: String,
 }
 
 fn main() {
     let params = Args::parse();
-
-    let conn = sqlite::open(&params.path).unwrap();
-    store_create(&conn);
+    let env = store_open(std::path::Path::new(&params.path));
 
     match &params.command {
         Commands::Put { topic, attribute } => {
@@ -93,7 +85,7 @@ fn main() {
             std::io::stdin().read_to_string(&mut data).unwrap();
             println!(
                 "{}",
-                store_put(&conn, data, topic.clone(), attribute.clone())
+                store_put(&env, topic.clone(), attribute.clone(), data)
             );
         }
 
@@ -107,16 +99,13 @@ fn main() {
                 println!(": welcome");
             }
 
-            let last_id = last_id.unwrap_or(0);
-
-            let rows = store_cat(conn, last_id, *follow);
-
-            for row in rows {
-                let data = serde_json::to_string(&row).unwrap();
+            let env = std::sync::Arc::new(env);
+            let frames = store_cat(env.clone(), *last_id, *follow);
+            for frame in frames {
+                let data = serde_json::to_string(&frame).unwrap();
                 match sse {
                     true => {
-                        println!("id: {}", row.id);
-                        // let data = row.data.trim().replace("\n", "\ndata: ");
+                        println!("id: {}", frame.id);
                         println!("data: {}\n", data);
                     }
 
@@ -128,14 +117,16 @@ fn main() {
         Commands::Call { topic } => {
             let mut data = String::new();
             std::io::stdin().read_to_string(&mut data).unwrap();
-            let id = store_put(&conn, data, Some(topic.clone()), Some(".request".into()));
-            let rows = store_cat(conn, id, true);
-            let rows = rows.iter().filter(|row| {
-                row.frame.topic == Some(topic.to_string())
-                    && row.frame.attribute == Some(".response".into())
+
+            let env = std::sync::Arc::new(env);
+            let id = store_put(&env, Some(topic.clone()), Some(".request".into()), data);
+            let frames = store_cat(env.clone(), Some(id), true);
+            let frames = frames.iter().filter(|frame| {
+                frame.topic == Some(topic.to_string())
+                    && frame.attribute == Some(".response".into())
             });
-            for row in rows {
-                let response: ResponseFrame = serde_json::from_str(&row.frame.data).unwrap();
+            for frame in frames {
+                let response: ResponseFrame = serde_json::from_str(&frame.data).unwrap();
                 if response.source_id == id {
                     println!("{}", response.data);
                 }
@@ -148,31 +139,29 @@ fn main() {
             command,
             args,
         } => {
-            let last_id = store_cat_poll(&conn, 0)
-                .filter(|row| {
-                    row.frame.topic == Some(topic.to_string())
-                        && row.frame.attribute == Some(".response".into())
+            let env = std::sync::Arc::new(env);
+
+            let last_id = store_cat(env.clone(), None, false)
+                .iter()
+                .filter(|frame| {
+                    frame.topic == Some(topic.to_string())
+                        && frame.attribute == Some(".response".into())
                 })
                 .last()
-                .and_then(|row| {
+                .and_then(|frame| {
                     Some(
-                        serde_json::from_str::<ResponseFrame>(&row.frame.data)
+                        serde_json::from_str::<ResponseFrame>(&frame.data)
                             .unwrap()
                             .source_id,
                     )
-                })
-                .unwrap_or(0);
+                });
 
-            let rows = store_cat(conn, last_id, true);
-            let rows = rows.iter().filter(|row| {
-                row.frame.topic == Some(topic.to_string())
-                    && row.frame.attribute == Some(".request".into())
+            let frames = store_cat(env.clone(), last_id, true);
+            let frames = frames.iter().filter(|frame| {
+                frame.topic == Some(topic.to_string()) && frame.attribute == Some(".request".into())
             });
 
-            // grab a new connection to use for writes
-            let conn = sqlite::open(&params.path).unwrap();
-
-            for row in rows {
+            for frame in frames {
                 let mut p = std::process::Command::new(command)
                     .args(args)
                     .stdin(std::process::Stdio::piped())
@@ -181,16 +170,16 @@ fn main() {
                     .expect("failed to spawn");
                 {
                     let mut stdin = p.stdin.take().expect("failed to take stdin");
-                    stdin.write_all(row.frame.data.as_bytes()).unwrap();
+                    stdin.write_all(frame.data.as_bytes()).unwrap();
                 }
                 let res = p.wait_with_output().unwrap();
                 let data = String::from_utf8(res.stdout).unwrap();
                 let res = ResponseFrame {
-                    source_id: row.id,
+                    source_id: frame.id,
                     data: data,
                 };
                 let data = serde_json::to_string(&res).unwrap();
-                let _ = store_put(&conn, data, Some(topic.clone()), Some(".response".into()));
+                let _ = store_put(&env, Some(topic.clone()), Some(".response".into()), data);
             }
         }
     }
@@ -240,97 +229,70 @@ fn parse_sse<R: Read>(buf: &mut BufReader<R>) -> Option<Event> {
     });
 }
 
-fn store_create(conn: &sqlite::Connection) {
-    conn.execute(
-        "
-        CREATE TABLE IF NOT EXISTS stream (
-        id INTEGER PRIMARY KEY,
-        frame TEXT NOT NULL,
-        stamp TEXT NOT NULL
-        )",
-    )
-    .unwrap();
+fn store_open(path: &std::path::Path) -> lmdb::Environment {
+    std::fs::create_dir_all(path).unwrap();
+    let env = lmdb::Environment::new().open(path).unwrap();
+    return env;
 }
 
 fn store_put(
-    conn: &sqlite::Connection,
-    data: String,
+    env: &lmdb::Environment,
     topic: Option<String>,
     attribute: Option<String>,
-) -> i64 {
+    data: String,
+) -> scru128::Scru128Id {
+    let id = scru128::new();
+
     let frame = Frame {
+        id: id,
         topic: topic.clone(),
         attribute: attribute.clone(),
         data: data.trim().to_string(),
     };
-    let frame = serde_json::to_string(&frame).unwrap();
+    let frame = serde_json::to_vec(&frame).unwrap();
 
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis()
-        .to_string();
+    let db = env.open_db(None).unwrap();
+    let mut txn = env.begin_rw_txn().unwrap();
+    txn.put(
+        db,
+        // if I understand the docs right, this should be 'to_ne_bytes', but that doesn't
+        // work
+        &id.to_u128().to_be_bytes(),
+        &frame,
+        lmdb::WriteFlags::empty(),
+    )
+    .unwrap();
+    txn.commit().unwrap();
 
-    let mut q = conn
-        .prepare(
-            "INSERT INTO stream (frame, stamp)
-             VALUES (?, ?)
-             RETURNING id;",
-        )
-        .unwrap()
-        .bind(1, &*frame)
-        .unwrap()
-        .bind(2, &*stamp)
-        .unwrap();
-
-    assert_eq!(q.next().unwrap(), sqlite::State::Row);
-    let id = q.read::<i64>(0).unwrap();
-    assert_eq!(q.next().unwrap(), sqlite::State::Done);
     return id;
 }
 
-fn store_cat_poll(conn: &sqlite::Connection, last_id: i64) -> impl Iterator<Item = Row> + '_ {
-    // todo:
-    // `Result::unwrap()` on an `Err` value: Error {
-    //     code: Some(5), message: Some("database is locked") }',
-    let cur = conn
-        .prepare(
-            "SELECT
-                    id, frame, stamp
-                FROM stream
-                WHERE id > ?
-                ORDER BY id ASC",
-        )
-        .unwrap()
-        .bind(1, last_id)
-        .unwrap()
-        .into_cursor();
-
-    cur.map(|r| {
-        let r = r.unwrap();
-        let frame = r.get::<String, _>(1);
-        let frame: Frame = serde_json::from_str(&frame).unwrap();
-        Row {
-            id: r.get::<i64, _>(0),
-            frame: frame,
-            stamp: r.get::<String, _>(2),
-        }
-    })
-}
-
 fn store_cat(
-    conn: sqlite::Connection,
-    last_id: i64,
+    env: std::sync::Arc<lmdb::Environment>,
+    last_id: Option<scru128::Scru128Id>,
     follow: bool,
-) -> std::sync::mpsc::Receiver<Row> {
-    let (tx, rx) = std::sync::mpsc::sync_channel::<Row>(0);
+) -> std::sync::mpsc::Receiver<Frame> {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Frame>(0);
     std::thread::spawn(move || {
         let mut last_id = last_id;
+        let db = env.open_db(None).unwrap();
         loop {
-            let rows = store_cat_poll(&conn, last_id);
-            for row in rows {
-                last_id = row.id;
-                if tx.send(row).is_err() {
+            let txn = env.begin_ro_txn().unwrap();
+            let mut c = txn.open_ro_cursor(db).unwrap();
+            let it = match last_id {
+                Some(key) => {
+                    let mut i = c.iter_from(&key.to_u128().to_be_bytes());
+                    i.next();
+                    i
+                }
+                None => c.iter_start(),
+            };
+
+            for item in it {
+                let (_, value) = item.unwrap();
+                let frame: Frame = serde_json::from_slice(&value).unwrap();
+                last_id = Some(frame.id);
+                if tx.send(frame).is_err() {
                     return;
                 }
             }
@@ -347,33 +309,30 @@ fn store_cat(
 mod tests {
     use super::*;
     use indoc::indoc;
+    use temp_dir::TempDir;
     // use pretty_assertions::assert_eq;
 
     #[test]
     fn test_store() {
-        let conn = sqlite::open(":memory:").unwrap();
-        store_create(&conn);
+        let d = TempDir::new().unwrap();
+        let env = std::sync::Arc::new(store_open(&d.path()));
 
-        let id = store_put(&conn, "foo".into(), None, None);
-        assert_eq!(id, 1);
-
-        assert_eq!(store_cat_poll(&conn, 0).count(), 1);
+        let id = store_put(&env, None, None, "foo".into());
+        assert_eq!(store_cat(env.clone(), None, false).iter().count(), 1);
 
         // skip with last_id
-        assert_eq!(store_cat_poll(&conn, 1).count(), 0);
+        assert_eq!(store_cat(env.clone(), Some(id), false).iter().count(), 0);
     }
 
     #[test]
     fn test_store_cat_follow() {
-        let db_uri = "file:1?mode=memory&cache=shared";
-        let conn = sqlite::open(db_uri).unwrap();
-        store_create(&conn);
-        let rx = store_cat(conn, 0, true);
+        let d = TempDir::new().unwrap();
+        let env = std::sync::Arc::new(store_open(&d.path()));
 
-        let conn = sqlite::open(db_uri).unwrap();
-        let id = store_put(&conn, "foo".into(), None, None);
-        assert_eq!(id, 1);
-        assert_eq!(rx.recv().unwrap().id, 1);
+        let rx = store_cat(env.clone(), None, true);
+
+        let id = store_put(&env, None, None, "foo".into());
+        assert_eq!(rx.recv().unwrap().id, id);
 
         // no updates
         assert!(rx
@@ -381,15 +340,13 @@ mod tests {
             .is_err());
 
         // an update
-        let id = store_put(&conn, "foo".into(), None, None);
-        assert_eq!(id, 2);
-        assert_eq!(rx.recv().unwrap().id, 2);
+        let id = store_put(&env, None, None, "foo".into());
+        assert_eq!(rx.recv().unwrap().id, id);
 
         // check sender cleanly stops
         drop(rx);
 
-        let id = store_put(&conn, "foo".into(), None, None);
-        assert_eq!(id, 3);
+        let _ = store_put(&env, None, None, "foo".into());
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
 
