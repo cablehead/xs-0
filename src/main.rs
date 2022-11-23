@@ -3,6 +3,8 @@ use std::io::BufReader;
 use std::io::Read;
 use std::io::Write;
 
+use std::str::FromStr;
+
 use serde::{Deserialize, Serialize};
 
 use lmdb::Cursor;
@@ -35,6 +37,11 @@ enum Commands {
         attribute: Option<String>,
     },
 
+    Get {
+        #[clap(long, value_parser)]
+        id: String,
+    },
+
     Cat {
         #[clap(short, long, action)]
         follow: bool,
@@ -59,7 +66,7 @@ enum Commands {
     },
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(PartialEq, Debug, Serialize, Deserialize)]
 struct Frame {
     id: scru128::Scru128Id,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -87,6 +94,13 @@ fn main() {
                 "{}",
                 store_put(&env, topic.clone(), attribute.clone(), data)
             );
+        }
+
+        Commands::Get { id } => {
+            let id = scru128::Scru128Id::from_str(id).unwrap();
+            let frame = store_get(&env, id);
+            let frame = serde_json::to_string(&frame).unwrap();
+            println!("{}", frame);
         }
 
         Commands::Cat {
@@ -270,6 +284,14 @@ fn store_put(
     return id;
 }
 
+fn store_get(env: &lmdb::Environment, id: scru128::Scru128Id) -> Frame {
+    let db = env.open_db(None).unwrap();
+    let txn = env.begin_ro_txn().unwrap();
+    let value = txn.get(db, &id.to_u128().to_be_bytes()).unwrap();
+    let frame: Frame = serde_json::from_slice(&value).unwrap();
+    frame
+}
+
 fn store_cat(
     env: std::sync::Arc<lmdb::Environment>,
     last_id: Option<scru128::Scru128Id>,
@@ -322,6 +344,17 @@ mod tests {
 
         let id = store_put(&env, None, None, "foo".into());
         assert_eq!(store_cat(env.clone(), None, false).iter().count(), 1);
+
+        let frame = store_get(&env, id);
+        assert_eq!(
+            frame,
+            Frame {
+                id: id,
+                topic: None,
+                attribute: None,
+                data: "foo".into()
+            }
+        );
 
         // skip with last_id
         assert_eq!(store_cat(env.clone(), Some(id), false).iter().count(), 0);
