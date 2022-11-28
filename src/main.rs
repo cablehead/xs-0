@@ -284,12 +284,14 @@ fn store_put(
     return id;
 }
 
-fn store_get(env: &lmdb::Environment, id: scru128::Scru128Id) -> Frame {
+fn store_get(env: &lmdb::Environment, id: scru128::Scru128Id) -> Option<Frame> {
     let db = env.open_db(None).unwrap();
     let txn = env.begin_ro_txn().unwrap();
-    let value = txn.get(db, &id.to_u128().to_be_bytes()).unwrap();
-    let frame: Frame = serde_json::from_slice(&value).unwrap();
-    frame
+    match txn.get(db, &id.to_u128().to_be_bytes()) {
+        Ok(value) => Some(serde_json::from_slice(&value).unwrap()),
+        Err(lmdb::Error::NotFound) => None,
+        Err(err) => panic!("store_get: {:?}", err),
+    }
 }
 
 fn store_cat(
@@ -345,7 +347,7 @@ mod tests {
         let id = store_put(&env, None, None, "foo".into());
         assert_eq!(store_cat(env.clone(), None, false).iter().count(), 1);
 
-        let frame = store_get(&env, id);
+        let frame = store_get(&env, id).unwrap();
         assert_eq!(
             frame,
             Frame {
