@@ -147,17 +147,33 @@ fn main() {
             std::io::stdin().read_to_string(&mut data).unwrap();
 
             let id = store_put(&env, Some(topic.clone()), Some(".request".into()), data);
-            let frames = store_cat(&env, Some(id));
-            let frames = frames.iter().filter(|frame| {
-                frame.topic == Some(topic.to_string())
-                    && frame.attribute == Some(".response".into())
-            });
-            for frame in frames {
-                let response: ResponseFrame = serde_json::from_str(&frame.data).unwrap();
-                if response.source_id == id {
-                    print!("{}", response.data);
+            let mut last_id = Some(id);
+
+            let mut signals =
+                signal_hook::iterator::Signals::new(signal_hook::consts::TERM_SIGNALS).unwrap();
+
+            loop {
+                let frames = store_cat(&env, last_id);
+                for frame in frames {
+                    last_id = Some(frame.id);
+
+                    if frame.topic != Some(topic.to_string())
+                        || frame.attribute != Some(".response".into())
+                    {
+                        continue;
+                    }
+
+                    let response: ResponseFrame = serde_json::from_str(&frame.data).unwrap();
+                    if response.source_id == id {
+                        print!("{}", response.data);
+                    }
+                    return;
                 }
-                break;
+
+                std::thread::sleep(std::time::Duration::from_millis(POLL_INTERVAL));
+                for _ in signals.pending() {
+                    return;
+                }
             }
         }
 
@@ -187,8 +203,8 @@ fn main() {
             loop {
                 let frames = store_cat(&env, last_id);
                 for frame in frames {
-                    println!("{:?}", frame);
                     last_id = Some(frame.id);
+
                     if frame.topic != Some(topic.to_string())
                         || frame.attribute != Some(".request".into())
                     {
