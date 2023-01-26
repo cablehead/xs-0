@@ -113,17 +113,31 @@ fn main() {
                 println!(": welcome");
             }
 
-            let env = std::sync::Arc::new(env);
-            let frames = store_cat(&env, *last_id);
-            for frame in frames {
-                let data = serde_json::to_string(&frame).unwrap();
-                match sse {
-                    true => {
-                        println!("id: {}", frame.id);
-                        println!("data: {}\n", data);
-                    }
+            let mut last_id = *last_id;
 
-                    false => println!("{}", data),
+            let mut signals =
+                signal_hook::iterator::Signals::new(signal_hook::consts::TERM_SIGNALS).unwrap();
+
+            loop {
+                let frames = store_cat(&env, last_id);
+                for frame in frames {
+                    last_id = Some(frame.id);
+                    let data = serde_json::to_string(&frame).unwrap();
+                    match sse {
+                        true => {
+                            println!("id: {}", frame.id);
+                            println!("data: {}\n", data);
+                        }
+
+                        false => println!("{}", data),
+                    }
+                }
+                if !follow {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(POLL_INTERVAL));
+                for sig in signals.pending() {
+                    return;
                 }
             }
         }
@@ -132,7 +146,6 @@ fn main() {
             let mut data = String::new();
             std::io::stdin().read_to_string(&mut data).unwrap();
 
-            let env = std::sync::Arc::new(env);
             let id = store_put(&env, Some(topic.clone()), Some(".request".into()), data);
             let frames = store_cat(&env, Some(id));
             let frames = frames.iter().filter(|frame| {
@@ -153,8 +166,6 @@ fn main() {
             command,
             args,
         } => {
-            let env = std::sync::Arc::new(env);
-
             let last_id = store_cat(&env, None)
                 .iter()
                 .filter(|frame| {
@@ -323,7 +334,7 @@ mod tests {
     #[test]
     fn test_store() {
         let d = TempDir::new().unwrap();
-        let env = std::sync::Arc::new(store_open(&d.path()));
+        let env = store_open(&d.path());
 
         let id = store_put(&env, None, None, "foo".into());
         assert_eq!(store_cat(&env, None).len(), 1);
@@ -342,34 +353,6 @@ mod tests {
         // skip with last_id
         assert_eq!(store_cat(&env, Some(id)).len(), 0);
     }
-
-    /*
-    #[test]
-    fn test_store_cat_follow() {
-        let d = TempDir::new().unwrap();
-        let env = std::sync::Arc::new(store_open(&d.path()));
-
-        let rx = store_cat(env.clone(), None, true);
-
-        let id = store_put(&env, None, None, "foo".into());
-        assert_eq!(rx.recv().unwrap().id, id);
-
-        // no updates
-        assert!(rx
-            .recv_timeout(std::time::Duration::from_millis(20))
-            .is_err());
-
-        // an update
-        let id = store_put(&env, None, None, "foo".into());
-        assert_eq!(rx.recv().unwrap().id, id);
-
-        // check sender cleanly stops
-        drop(rx);
-
-        let _ = store_put(&env, None, None, "foo".into());
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    */
 
     #[test]
     fn test_parse_sse() {
