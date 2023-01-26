@@ -113,17 +113,31 @@ fn main() {
                 println!(": welcome");
             }
 
-            let env = std::sync::Arc::new(env);
-            let frames = store_cat(env.clone(), *last_id, *follow);
-            for frame in frames {
-                let data = serde_json::to_string(&frame).unwrap();
-                match sse {
-                    true => {
-                        println!("id: {}", frame.id);
-                        println!("data: {}\n", data);
-                    }
+            let mut last_id = *last_id;
 
-                    false => println!("{}", data),
+            let mut signals =
+                signal_hook::iterator::Signals::new(signal_hook::consts::TERM_SIGNALS).unwrap();
+
+            loop {
+                let frames = store_cat(&env, last_id);
+                for frame in frames {
+                    last_id = Some(frame.id);
+                    let data = serde_json::to_string(&frame).unwrap();
+                    match sse {
+                        true => {
+                            println!("id: {}", frame.id);
+                            println!("data: {}\n", data);
+                        }
+
+                        false => println!("{}", data),
+                    }
+                }
+                if !follow {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(POLL_INTERVAL));
+                for _ in signals.pending() {
+                    return;
                 }
             }
         }
@@ -132,19 +146,34 @@ fn main() {
             let mut data = String::new();
             std::io::stdin().read_to_string(&mut data).unwrap();
 
-            let env = std::sync::Arc::new(env);
             let id = store_put(&env, Some(topic.clone()), Some(".request".into()), data);
-            let frames = store_cat(env.clone(), Some(id), true);
-            let frames = frames.iter().filter(|frame| {
-                frame.topic == Some(topic.to_string())
-                    && frame.attribute == Some(".response".into())
-            });
-            for frame in frames {
-                let response: ResponseFrame = serde_json::from_str(&frame.data).unwrap();
-                if response.source_id == id {
-                    print!("{}", response.data);
+            let mut last_id = Some(id);
+
+            let mut signals =
+                signal_hook::iterator::Signals::new(signal_hook::consts::TERM_SIGNALS).unwrap();
+
+            loop {
+                let frames = store_cat(&env, last_id);
+                for frame in frames {
+                    last_id = Some(frame.id);
+
+                    if frame.topic != Some(topic.to_string())
+                        || frame.attribute != Some(".response".into())
+                    {
+                        continue;
+                    }
+
+                    let response: ResponseFrame = serde_json::from_str(&frame.data).unwrap();
+                    if response.source_id == id {
+                        print!("{}", response.data);
+                    }
+                    return;
                 }
-                break;
+
+                std::thread::sleep(std::time::Duration::from_millis(POLL_INTERVAL));
+                for _ in signals.pending() {
+                    return;
+                }
             }
         }
 
@@ -153,9 +182,7 @@ fn main() {
             command,
             args,
         } => {
-            let env = std::sync::Arc::new(env);
-
-            let last_id = store_cat(env.clone(), None, false)
+            let mut last_id = store_cat(&env, None)
                 .iter()
                 .filter(|frame| {
                     frame.topic == Some(topic.to_string())
@@ -170,30 +197,44 @@ fn main() {
                     )
                 });
 
-            let frames = store_cat(env.clone(), last_id, true);
-            let frames = frames.iter().filter(|frame| {
-                frame.topic == Some(topic.to_string()) && frame.attribute == Some(".request".into())
-            });
+            let mut signals =
+                signal_hook::iterator::Signals::new(signal_hook::consts::TERM_SIGNALS).unwrap();
 
-            for frame in frames {
-                let mut p = std::process::Command::new(command)
-                    .args(args)
-                    .stdin(std::process::Stdio::piped())
-                    .stdout(std::process::Stdio::piped())
-                    .spawn()
-                    .expect("failed to spawn");
-                {
-                    let mut stdin = p.stdin.take().expect("failed to take stdin");
-                    stdin.write_all(frame.data.as_bytes()).unwrap();
+            loop {
+                let frames = store_cat(&env, last_id);
+                for frame in frames {
+                    last_id = Some(frame.id);
+
+                    if frame.topic != Some(topic.to_string())
+                        || frame.attribute != Some(".request".into())
+                    {
+                        continue;
+                    }
+
+                    let mut p = std::process::Command::new(command)
+                        .args(args)
+                        .stdin(std::process::Stdio::piped())
+                        .stdout(std::process::Stdio::piped())
+                        .spawn()
+                        .expect("failed to spawn");
+                    {
+                        let mut stdin = p.stdin.take().expect("failed to take stdin");
+                        stdin.write_all(frame.data.as_bytes()).unwrap();
+                    }
+                    let res = p.wait_with_output().unwrap();
+                    let data = String::from_utf8(res.stdout).unwrap();
+                    let res = ResponseFrame {
+                        source_id: frame.id,
+                        data: data,
+                    };
+                    let data = serde_json::to_string(&res).unwrap();
+                    let _ = store_put(&env, Some(topic.clone()), Some(".response".into()), data);
                 }
-                let res = p.wait_with_output().unwrap();
-                let data = String::from_utf8(res.stdout).unwrap();
-                let res = ResponseFrame {
-                    source_id: frame.id,
-                    data: data,
-                };
-                let data = serde_json::to_string(&res).unwrap();
-                let _ = store_put(&env, Some(topic.clone()), Some(".response".into()), data);
+
+                std::thread::sleep(std::time::Duration::from_millis(POLL_INTERVAL));
+                for _ in signals.pending() {
+                    return;
+                }
             }
         }
     }
@@ -294,42 +335,23 @@ fn store_get(env: &lmdb::Environment, id: scru128::Scru128Id) -> Option<Frame> {
     }
 }
 
-fn store_cat(
-    env: std::sync::Arc<lmdb::Environment>,
-    last_id: Option<scru128::Scru128Id>,
-    follow: bool,
-) -> std::sync::mpsc::Receiver<Frame> {
-    let (tx, rx) = std::sync::mpsc::sync_channel::<Frame>(0);
-    std::thread::spawn(move || {
-        let mut last_id = last_id;
-        let db = env.open_db(None).unwrap();
-        loop {
-            let txn = env.begin_ro_txn().unwrap();
-            let mut c = txn.open_ro_cursor(db).unwrap();
-            let it = match last_id {
-                Some(key) => {
-                    let mut i = c.iter_from(&key.to_u128().to_be_bytes());
-                    i.next();
-                    i
-                }
-                None => c.iter_start(),
-            };
-
-            for item in it {
-                let (_, value) = item.unwrap();
-                let frame: Frame = serde_json::from_slice(&value).unwrap();
-                last_id = Some(frame.id);
-                if tx.send(frame).is_err() {
-                    return;
-                }
-            }
-            if !follow {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(POLL_INTERVAL));
+fn store_cat(env: &lmdb::Environment, last_id: Option<scru128::Scru128Id>) -> Vec<Frame> {
+    let db = env.open_db(None).unwrap();
+    let txn = env.begin_ro_txn().unwrap();
+    let mut c = txn.open_ro_cursor(db).unwrap();
+    let it = match last_id {
+        Some(key) => {
+            let mut i = c.iter_from(&key.to_u128().to_be_bytes());
+            i.next();
+            i
         }
-    });
-    rx
+        None => c.iter_start(),
+    };
+    it.map(|item| -> Frame {
+        let (_, value) = item.unwrap();
+        serde_json::from_slice(&value).unwrap()
+    })
+    .collect()
 }
 
 #[cfg(test)]
@@ -342,10 +364,10 @@ mod tests {
     #[test]
     fn test_store() {
         let d = TempDir::new().unwrap();
-        let env = std::sync::Arc::new(store_open(&d.path()));
+        let env = store_open(&d.path());
 
         let id = store_put(&env, None, None, "foo".into());
-        assert_eq!(store_cat(env.clone(), None, false).iter().count(), 1);
+        assert_eq!(store_cat(&env, None).len(), 1);
 
         let frame = store_get(&env, id).unwrap();
         assert_eq!(
@@ -359,33 +381,7 @@ mod tests {
         );
 
         // skip with last_id
-        assert_eq!(store_cat(env.clone(), Some(id), false).iter().count(), 0);
-    }
-
-    #[test]
-    fn test_store_cat_follow() {
-        let d = TempDir::new().unwrap();
-        let env = std::sync::Arc::new(store_open(&d.path()));
-
-        let rx = store_cat(env.clone(), None, true);
-
-        let id = store_put(&env, None, None, "foo".into());
-        assert_eq!(rx.recv().unwrap().id, id);
-
-        // no updates
-        assert!(rx
-            .recv_timeout(std::time::Duration::from_millis(20))
-            .is_err());
-
-        // an update
-        let id = store_put(&env, None, None, "foo".into());
-        assert_eq!(rx.recv().unwrap().id, id);
-
-        // check sender cleanly stops
-        drop(rx);
-
-        let _ = store_put(&env, None, None, "foo".into());
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert_eq!(store_cat(&env, Some(id)).len(), 0);
     }
 
     #[test]
