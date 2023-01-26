@@ -166,7 +166,7 @@ fn main() {
             command,
             args,
         } => {
-            let last_id = store_cat(&env, None)
+            let mut last_id = store_cat(&env, None)
                 .iter()
                 .filter(|frame| {
                     frame.topic == Some(topic.to_string())
@@ -181,30 +181,44 @@ fn main() {
                     )
                 });
 
-            let frames = store_cat(&env, last_id);
-            let frames = frames.iter().filter(|frame| {
-                frame.topic == Some(topic.to_string()) && frame.attribute == Some(".request".into())
-            });
+            let mut signals =
+                signal_hook::iterator::Signals::new(signal_hook::consts::TERM_SIGNALS).unwrap();
 
-            for frame in frames {
-                let mut p = std::process::Command::new(command)
-                    .args(args)
-                    .stdin(std::process::Stdio::piped())
-                    .stdout(std::process::Stdio::piped())
-                    .spawn()
-                    .expect("failed to spawn");
-                {
-                    let mut stdin = p.stdin.take().expect("failed to take stdin");
-                    stdin.write_all(frame.data.as_bytes()).unwrap();
+            loop {
+                let frames = store_cat(&env, last_id);
+                for frame in frames {
+                    println!("{:?}", frame);
+                    last_id = Some(frame.id);
+                    if frame.topic != Some(topic.to_string())
+                        || frame.attribute != Some(".request".into())
+                    {
+                        continue;
+                    }
+
+                    let mut p = std::process::Command::new(command)
+                        .args(args)
+                        .stdin(std::process::Stdio::piped())
+                        .stdout(std::process::Stdio::piped())
+                        .spawn()
+                        .expect("failed to spawn");
+                    {
+                        let mut stdin = p.stdin.take().expect("failed to take stdin");
+                        stdin.write_all(frame.data.as_bytes()).unwrap();
+                    }
+                    let res = p.wait_with_output().unwrap();
+                    let data = String::from_utf8(res.stdout).unwrap();
+                    let res = ResponseFrame {
+                        source_id: frame.id,
+                        data: data,
+                    };
+                    let data = serde_json::to_string(&res).unwrap();
+                    let _ = store_put(&env, Some(topic.clone()), Some(".response".into()), data);
                 }
-                let res = p.wait_with_output().unwrap();
-                let data = String::from_utf8(res.stdout).unwrap();
-                let res = ResponseFrame {
-                    source_id: frame.id,
-                    data: data,
-                };
-                let data = serde_json::to_string(&res).unwrap();
-                let _ = store_put(&env, Some(topic.clone()), Some(".response".into()), data);
+
+                std::thread::sleep(std::time::Duration::from_millis(POLL_INTERVAL));
+                for _ in signals.pending() {
+                    return;
+                }
             }
         }
     }
