@@ -136,7 +136,7 @@ fn main() {
                     return;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(POLL_INTERVAL));
-                for sig in signals.pending() {
+                for _ in signals.pending() {
                     return;
                 }
             }
