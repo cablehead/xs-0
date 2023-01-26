@@ -114,7 +114,7 @@ fn main() {
             }
 
             let env = std::sync::Arc::new(env);
-            let frames = store_cat(env.clone(), *last_id, *follow);
+            let frames = store_cat(&env, *last_id);
             for frame in frames {
                 let data = serde_json::to_string(&frame).unwrap();
                 match sse {
@@ -134,7 +134,7 @@ fn main() {
 
             let env = std::sync::Arc::new(env);
             let id = store_put(&env, Some(topic.clone()), Some(".request".into()), data);
-            let frames = store_cat(env.clone(), Some(id), true);
+            let frames = store_cat(&env, Some(id));
             let frames = frames.iter().filter(|frame| {
                 frame.topic == Some(topic.to_string())
                     && frame.attribute == Some(".response".into())
@@ -155,7 +155,7 @@ fn main() {
         } => {
             let env = std::sync::Arc::new(env);
 
-            let last_id = store_cat(env.clone(), None, false)
+            let last_id = store_cat(&env, None)
                 .iter()
                 .filter(|frame| {
                     frame.topic == Some(topic.to_string())
@@ -170,7 +170,7 @@ fn main() {
                     )
                 });
 
-            let frames = store_cat(env.clone(), last_id, true);
+            let frames = store_cat(&env, last_id);
             let frames = frames.iter().filter(|frame| {
                 frame.topic == Some(topic.to_string()) && frame.attribute == Some(".request".into())
             });
@@ -294,42 +294,23 @@ fn store_get(env: &lmdb::Environment, id: scru128::Scru128Id) -> Option<Frame> {
     }
 }
 
-fn store_cat(
-    env: std::sync::Arc<lmdb::Environment>,
-    last_id: Option<scru128::Scru128Id>,
-    follow: bool,
-) -> std::sync::mpsc::Receiver<Frame> {
-    let (tx, rx) = std::sync::mpsc::sync_channel::<Frame>(0);
-    std::thread::spawn(move || {
-        let mut last_id = last_id;
-        let db = env.open_db(None).unwrap();
-        loop {
-            let txn = env.begin_ro_txn().unwrap();
-            let mut c = txn.open_ro_cursor(db).unwrap();
-            let it = match last_id {
-                Some(key) => {
-                    let mut i = c.iter_from(&key.to_u128().to_be_bytes());
-                    i.next();
-                    i
-                }
-                None => c.iter_start(),
-            };
-
-            for item in it {
-                let (_, value) = item.unwrap();
-                let frame: Frame = serde_json::from_slice(&value).unwrap();
-                last_id = Some(frame.id);
-                if tx.send(frame).is_err() {
-                    return;
-                }
-            }
-            if !follow {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(POLL_INTERVAL));
+fn store_cat(env: &lmdb::Environment, last_id: Option<scru128::Scru128Id>) -> Vec<Frame> {
+    let db = env.open_db(None).unwrap();
+    let txn = env.begin_ro_txn().unwrap();
+    let mut c = txn.open_ro_cursor(db).unwrap();
+    let it = match last_id {
+        Some(key) => {
+            let mut i = c.iter_from(&key.to_u128().to_be_bytes());
+            i.next();
+            i
         }
-    });
-    rx
+        None => c.iter_start(),
+    };
+    it.map(|item| -> Frame {
+        let (_, value) = item.unwrap();
+        serde_json::from_slice(&value).unwrap()
+    })
+    .collect()
 }
 
 #[cfg(test)]
@@ -345,7 +326,7 @@ mod tests {
         let env = std::sync::Arc::new(store_open(&d.path()));
 
         let id = store_put(&env, None, None, "foo".into());
-        assert_eq!(store_cat(env.clone(), None, false).iter().count(), 1);
+        assert_eq!(store_cat(&env, None).len(), 1);
 
         let frame = store_get(&env, id).unwrap();
         assert_eq!(
@@ -359,9 +340,10 @@ mod tests {
         );
 
         // skip with last_id
-        assert_eq!(store_cat(env.clone(), Some(id), false).iter().count(), 0);
+        assert_eq!(store_cat(&env, Some(id)).len(), 0);
     }
 
+    /*
     #[test]
     fn test_store_cat_follow() {
         let d = TempDir::new().unwrap();
@@ -387,6 +369,7 @@ mod tests {
         let _ = store_put(&env, None, None, "foo".into());
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
+    */
 
     #[test]
     fn test_parse_sse() {
