@@ -35,6 +35,8 @@ enum Commands {
         topic: Option<String>,
         #[clap(long, value_parser)]
         attribute: Option<String>,
+        #[clap(short, long, action)]
+        follow: bool,
     },
 
     Get {
@@ -87,13 +89,28 @@ fn main() {
     let env = store_open(std::path::Path::new(&params.path));
 
     match &params.command {
-        Commands::Put { topic, attribute } => {
-            let mut data = String::new();
-            std::io::stdin().read_to_string(&mut data).unwrap();
-            println!(
-                "{}",
-                store_put(&env, topic.clone(), attribute.clone(), data)
-            );
+        Commands::Put {
+            topic,
+            attribute,
+            follow,
+        } => {
+            if *follow {
+                let stdin = std::io::stdin();
+                for line in stdin.lock().lines() {
+                    let data = line.unwrap();
+                    println!(
+                        "{}",
+                        store_put(&env, topic.clone(), attribute.clone(), data)
+                    );
+                }
+            } else {
+                let mut data = String::new();
+                std::io::stdin().read_to_string(&mut data).unwrap();
+                println!(
+                    "{}",
+                    store_put(&env, topic.clone(), attribute.clone(), data)
+                );
+            }
         }
 
         Commands::Get { id } => {
