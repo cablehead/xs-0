@@ -11,6 +11,10 @@ homepage = "https://github.com/cablehead/xs"
 repository = "https://github.com/cablehead/xs"
 license = "MIT"
 
+[[bin]]
+name = "xs"
+path = "src/main.rs"
+
 [dependencies]
 clap = { version = "3.2.14", features = ["derive"] }
 serde = { version = "1.0.142", features = ["derive"] }
