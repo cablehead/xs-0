@@ -2,7 +2,7 @@
 name = "xs-lib"
 version = "0.2.0"
 edition = "2021"
-authors = ["Andy Gayton <andy@thecablelounge.com"]
+authors = ["Andy Gayton <andy@thecablelounge.com>"]
 description = "xs-lib is a command-line tool (xs) and a Rust library (xs_lib) for recording and retrieving sequential streams of payloads. It uses Lightning Memory-Mapped Database (LMDB) for local data storage."
 keywords = ["cli", "queue", "embedded", "eventstore", "lmdb"]
 categories = ["command-line-utilities", "embedded", "database"]
