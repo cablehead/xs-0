@@ -23,7 +23,7 @@ stream of payloads:
 
 # Retrieve the payloads
 % xs ./s cat
-{"id":"039KW46V39SC3LYMJSMHJJJRH","data":"hi there"}
+{"id":"039KW46V39SC3LYMJSMHJJJRH","data":"hello world"}
 ```
 
 IDs are [SCRU128](https://github.com/scru128/rust)s.
