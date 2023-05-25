@@ -1,5 +1,4 @@
 use std::io::BufRead;
-use std::io::BufReader;
 use std::io::Read;
 use std::io::Write;
 
@@ -264,43 +263,6 @@ struct Event {
     id: Option<i64>,
 }
 
-fn parse_sse<R: Read>(buf: &mut BufReader<R>) -> Option<Event> {
-    let mut line = String::new();
-
-    let mut data = Vec::<String>::new();
-    let mut id: Option<i64> = None;
-
-    loop {
-        line.clear();
-        let n = buf.read_line(&mut line).unwrap();
-        if n == 0 {
-            // stream interrupted
-            return None;
-        }
-
-        if line == "\n" {
-            // end of event, emit
-            break;
-        }
-
-        let (field, rest) = line.split_at(line.find(":").unwrap() + 1);
-        let rest = rest.trim();
-        match field {
-            // comment
-            ":" => (),
-            "id:" => id = Some(rest.parse::<i64>().unwrap()),
-            "data:" => data.push(rest.to_string()),
-            _ => todo!(),
-        };
-    }
-
-    return Some(Event {
-        data: data.join(" "),
-        event: None,
-        id: id,
-    });
-}
-
 fn store_open(path: &std::path::Path) -> lmdb::Environment {
     std::fs::create_dir_all(path).unwrap();
     let env = lmdb::Environment::new()
@@ -399,6 +361,44 @@ mod tests {
 
         // skip with last_id
         assert_eq!(store_cat(&env, Some(id)).len(), 0);
+    }
+
+    use std::io::BufReader;
+    fn parse_sse<R: Read>(buf: &mut BufReader<R>) -> Option<Event> {
+        let mut line = String::new();
+
+        let mut data = Vec::<String>::new();
+        let mut id: Option<i64> = None;
+
+        loop {
+            line.clear();
+            let n = buf.read_line(&mut line).unwrap();
+            if n == 0 {
+                // stream interrupted
+                return None;
+            }
+
+            if line == "\n" {
+                // end of event, emit
+                break;
+            }
+
+            let (field, rest) = line.split_at(line.find(":").unwrap() + 1);
+            let rest = rest.trim();
+            match field {
+                // comment
+                ":" => (),
+                "id:" => id = Some(rest.parse::<i64>().unwrap()),
+                "data:" => data.push(rest.to_string()),
+                _ => todo!(),
+            };
+        }
+
+        return Some(Event {
+            data: data.join(" "),
+            event: None,
+            id: id,
+        });
     }
 
     #[test]
