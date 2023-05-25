@@ -4,9 +4,6 @@ use std::io::Write;
 
 use std::str::FromStr;
 
-use xs_lib;
-
-
 use clap::{AppSettings, Parser, Subcommand};
 
 // POLL_INTERVAL is the number of milliseconds to wait between polls when watching for
@@ -134,7 +131,7 @@ fn main() {
                     return;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(POLL_INTERVAL));
-                for _ in signals.pending() {
+                if signals.pending().next().is_some() {
                     return;
                 }
             }
@@ -161,7 +158,8 @@ fn main() {
                         continue;
                     }
 
-                    let response: xs_lib::ResponseFrame = serde_json::from_str(&frame.data).unwrap();
+                    let response: xs_lib::ResponseFrame =
+                        serde_json::from_str(&frame.data).unwrap();
                     if response.source_id == id {
                         print!("{}", response.data);
                     }
@@ -169,7 +167,7 @@ fn main() {
                 }
 
                 std::thread::sleep(std::time::Duration::from_millis(POLL_INTERVAL));
-                for _ in signals.pending() {
+                if signals.pending().next().is_some() {
                     return;
                 }
             }
@@ -187,12 +185,10 @@ fn main() {
                         && frame.attribute == Some(".response".into())
                 })
                 .last()
-                .and_then(|frame| {
-                    Some(
-                        serde_json::from_str::<xs_lib::ResponseFrame>(&frame.data)
-                            .unwrap()
-                            .source_id,
-                    )
+                .map(|frame| {
+                    serde_json::from_str::<xs_lib::ResponseFrame>(&frame.data)
+                        .unwrap()
+                        .source_id
                 });
 
             let mut signals =
@@ -223,14 +219,19 @@ fn main() {
                     let data = String::from_utf8(res.stdout).unwrap();
                     let res = xs_lib::ResponseFrame {
                         source_id: frame.id,
-                        data: data,
+                        data,
                     };
                     let data = serde_json::to_string(&res).unwrap();
-                    let _ = xs_lib::store_put(&env, Some(topic.clone()), Some(".response".into()), data);
+                    let _ = xs_lib::store_put(
+                        &env,
+                        Some(topic.clone()),
+                        Some(".response".into()),
+                        data,
+                    );
                 }
 
                 std::thread::sleep(std::time::Duration::from_millis(POLL_INTERVAL));
-                for _ in signals.pending() {
+                if signals.pending().next().is_some() {
                     return;
                 }
             }

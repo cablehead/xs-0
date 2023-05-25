@@ -32,7 +32,7 @@ pub fn store_open(path: &std::path::Path) -> lmdb::Environment {
         .set_map_size(10 * 10485760)
         .open(path)
         .unwrap();
-    return env;
+    env
 }
 
 pub fn store_put(
@@ -44,9 +44,9 @@ pub fn store_put(
     let id = scru128::new();
 
     let frame = Frame {
-        id: id,
-        topic: topic.clone(),
-        attribute: attribute.clone(),
+        id,
+        topic,
+        attribute,
         data: data.trim().to_string(),
     };
     let frame = serde_json::to_vec(&frame).unwrap();
@@ -64,14 +64,14 @@ pub fn store_put(
     .unwrap();
     txn.commit().unwrap();
 
-    return id;
+    id
 }
 
 pub fn store_get(env: &lmdb::Environment, id: scru128::Scru128Id) -> Option<Frame> {
     let db = env.open_db(None).unwrap();
     let txn = env.begin_ro_txn().unwrap();
     match txn.get(db, &id.to_u128().to_be_bytes()) {
-        Ok(value) => Some(serde_json::from_slice(&value).unwrap()),
+        Ok(value) => Some(serde_json::from_slice(value).unwrap()),
         Err(lmdb::Error::NotFound) => None,
         Err(err) => panic!("store_get: {:?}", err),
     }
@@ -83,7 +83,7 @@ pub fn store_cat(env: &lmdb::Environment, last_id: Option<scru128::Scru128Id>) -
     let mut c = txn.open_ro_cursor(db).unwrap();
     let it = match last_id {
         Some(key) => {
-            let mut i = c.iter_from(&key.to_u128().to_be_bytes());
+            let mut i = c.iter_from(key.to_u128().to_be_bytes());
             i.next();
             i
         }
@@ -91,7 +91,7 @@ pub fn store_cat(env: &lmdb::Environment, last_id: Option<scru128::Scru128Id>) -
     };
     it.map(|item| -> Frame {
         let (_, value) = item.unwrap();
-        serde_json::from_slice(&value).unwrap()
+        serde_json::from_slice(value).unwrap()
     })
     .collect()
 }
@@ -99,9 +99,9 @@ pub fn store_cat(env: &lmdb::Environment, last_id: Option<scru128::Scru128Id>) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Read;
-    use std::io::BufRead;
     use indoc::indoc;
+    use std::io::BufRead;
+    use std::io::Read;
     use temp_dir::TempDir;
     // use pretty_assertions::assert_eq;
 
