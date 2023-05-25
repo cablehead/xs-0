@@ -1,7 +1,19 @@
 [package]
-name = "xs"
-version = "0.1.0"
+name = "xs-lib"
+version = "0.2.0"
 edition = "2021"
+authors = ["Andy Gayton <andy@thecablelounge.com"]
+description = "xs-lib is a command-line tool (xs) and a Rust library (xs_lib) for recording and retrieving sequential streams of payloads. It uses Lightning Memory-Mapped Database (LMDB) for local data storage."
+keywords = ["cli", "queue", "embedded", "eventstore", "lmdb"]
+categories = ["command-line-utilities", "embedded", "database"]
+readme = "README.md"
+homepage = "https://github.com/cablehead/xs"
+repository = "https://github.com/cablehead/xs"
+license = "MIT"
+
+[[bin]]
+name = "xs"
+path = "src/main.rs"
 
 [dependencies]
 clap = { version = "3.2.14", features = ["derive"] }
