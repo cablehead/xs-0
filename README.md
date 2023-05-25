@@ -32,25 +32,23 @@ IDs are [SCRU128](https://github.com/scru128/rust)s.
 
 Here are the available commands for `xs`:
 
-```shell
-xs 0.2.0
+```
+Usage: xs <PATH> <COMMAND>
 
-USAGE:
-    xs <PATH> <SUBCOMMAND>
+Commands:
+  put    Insert a payload into the store from stdin, with optional follow
+  get    Fetch a specific payload by ID
+  cat    Stream payloads from store with optional last_id and follow
+  call   Send request to topic, wait for response, print output
+  serve  Listen for requests, execute command, write output back
+  help   Print this message or the help of the given subcommand(s)
 
-ARGS:
-    <PATH>    Path to the LMDB environment
+Arguments:
+  <PATH>
 
-OPTIONS:
-    -h, --help       Print help information
-    -V, --version    Print version information
-
-SUBCOMMANDS:
-    call    Call a command with payload as argument
-    cat     Retrieve and display all payloads
-    get     Retrieve a specific payload
-    put     Record a new payload
-    serve   Serve payloads via an HTTP server
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
 ```
 
 ## License

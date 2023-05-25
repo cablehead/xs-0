@@ -4,7 +4,7 @@ use std::io::Write;
 
 use std::str::FromStr;
 
-use clap::{AppSettings, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 
 // POLL_INTERVAL is the number of milliseconds to wait between polls when watching for
 // additions to the stream
@@ -12,8 +12,7 @@ use clap::{AppSettings, Parser, Subcommand};
 const POLL_INTERVAL: u64 = 5;
 
 #[derive(Parser, Debug)]
-#[clap(author, version, about, long_about = None)]
-#[clap(global_setting(AppSettings::DisableHelpSubcommand))]
+#[clap(version)]
 struct Args {
     #[clap(value_parser)]
     path: String,
@@ -24,6 +23,7 @@ struct Args {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Insert a payload into the store from stdin, with optional follow
     Put {
         #[clap(long, value_parser)]
         topic: Option<String>,
@@ -33,11 +33,13 @@ enum Commands {
         follow: bool,
     },
 
+    /// Fetch a specific payload by ID
     Get {
-        #[clap(long, value_parser)]
+        #[clap(value_parser)]
         id: String,
     },
 
+    /// Stream payloads from store with optional last_id and follow
     Cat {
         #[clap(short, long, action)]
         follow: bool,
@@ -47,11 +49,13 @@ enum Commands {
         last_id: Option<scru128::Scru128Id>,
     },
 
+    /// Send request to topic, wait for response, print output
     Call {
         #[clap(long, value_parser)]
         topic: String,
     },
 
+    /// Listen for requests, execute command, write output back
     Serve {
         #[clap(long, value_parser)]
         topic: String,
