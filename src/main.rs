@@ -68,7 +68,10 @@ enum Commands {
 
 fn main() {
     let params = Args::parse();
-    let env = xs_lib::store_open(std::path::Path::new(&params.path));
+    let env = xs_lib::store_open(std::path::Path::new(&params.path)).unwrap_or_else(|err| {
+        eprintln!("Error opening store: {}", err);
+        std::process::exit(1);
+    });
 
     match &params.command {
         Commands::Put {
@@ -80,26 +83,31 @@ fn main() {
                 let stdin = std::io::stdin();
                 for line in stdin.lock().lines() {
                     let data = line.unwrap();
-                    println!(
-                        "{}",
-                        xs_lib::store_put(&env, topic.clone(), attribute.clone(), data)
-                    );
+                    match xs_lib::store_put(&env, topic.clone(), attribute.clone(), data) {
+                        Ok(id) => println!("{}", id),
+                        Err(err) => eprintln!("Error putting data: {}", err),
+                    }
                 }
             } else {
                 let mut data = String::new();
                 std::io::stdin().read_to_string(&mut data).unwrap();
-                println!(
-                    "{}",
-                    xs_lib::store_put(&env, topic.clone(), attribute.clone(), data)
-                );
+                match xs_lib::store_put(&env, topic.clone(), attribute.clone(), data) {
+                    Ok(id) => println!("{}", id),
+                    Err(err) => eprintln!("Error putting data: {}", err),
+                }
             }
         }
 
         Commands::Get { id } => {
             let id = scru128::Scru128Id::from_str(id).unwrap();
-            let frame = xs_lib::store_get(&env, id);
-            let frame = serde_json::to_string(&frame).unwrap();
-            println!("{}", frame);
+            match xs_lib::store_get(&env, id) {
+                Ok(Some(frame)) => {
+                    let frame = serde_json::to_string(&frame).unwrap();
+                    println!("{}", frame);
+                }
+                Ok(None) => eprintln!("No frame found for id: {}", id),
+                Err(err) => eprintln!("Error getting frame: {}", err),
+            }
         }
 
         Commands::Cat {
@@ -118,19 +126,24 @@ fn main() {
                 signal_hook::iterator::Signals::new(signal_hook::consts::TERM_SIGNALS).unwrap();
 
             loop {
-                let frames = xs_lib::store_cat(&env, last_id);
-                for frame in frames {
-                    last_id = Some(frame.id);
-                    let data = serde_json::to_string(&frame).unwrap();
-                    match sse {
-                        true => {
-                            println!("id: {}", frame.id);
-                            println!("data: {}\n", data);
-                        }
+                match xs_lib::store_cat(&env, last_id) {
+                    Ok(frames) => {
+                        for frame in frames {
+                            last_id = Some(frame.id);
+                            let data = serde_json::to_string(&frame).unwrap();
+                            match sse {
+                                true => {
+                                    println!("id: {}", frame.id);
+                                    println!("data: {}\n", data);
+                                }
 
-                        false => println!("{}", data),
+                                false => println!("{}", data),
+                            }
+                        }
                     }
+                    Err(err) => eprintln!("Error getting frames: {}", err),
                 }
+
                 if !follow {
                     return;
                 }
@@ -145,29 +158,41 @@ fn main() {
             let mut data = String::new();
             std::io::stdin().read_to_string(&mut data).unwrap();
 
-            let id = xs_lib::store_put(&env, Some(topic.clone()), Some(".request".into()), data);
+            let id =
+                match xs_lib::store_put(&env, Some(topic.clone()), Some(".request".into()), data) {
+                    Ok(id) => id,
+                    Err(err) => {
+                        eprintln!("Error putting request: {}", err);
+                        return;
+                    }
+                };
+
             let mut last_id = Some(id);
 
             let mut signals =
                 signal_hook::iterator::Signals::new(signal_hook::consts::TERM_SIGNALS).unwrap();
 
             loop {
-                let frames = xs_lib::store_cat(&env, last_id);
-                for frame in frames {
-                    last_id = Some(frame.id);
+                match xs_lib::store_cat(&env, last_id) {
+                    Ok(frames) => {
+                        for frame in frames {
+                            last_id = Some(frame.id);
 
-                    if frame.topic != Some(topic.to_string())
-                        || frame.attribute != Some(".response".into())
-                    {
-                        continue;
-                    }
+                            if frame.topic != Some(topic.to_string())
+                                || frame.attribute != Some(".response".into())
+                            {
+                                continue;
+                            }
 
-                    let response: xs_lib::ResponseFrame =
-                        serde_json::from_str(&frame.data).unwrap();
-                    if response.source_id == id {
-                        print!("{}", response.data);
+                            let response: xs_lib::ResponseFrame =
+                                serde_json::from_str(&frame.data).unwrap();
+                            if response.source_id == id {
+                                print!("{}", response.data);
+                            }
+                            return;
+                        }
                     }
-                    return;
+                    Err(err) => eprintln!("Error getting frames: {}", err),
                 }
 
                 std::thread::sleep(std::time::Duration::from_millis(POLL_INTERVAL));
@@ -183,6 +208,10 @@ fn main() {
             args,
         } => {
             let mut last_id = xs_lib::store_cat(&env, None)
+                .unwrap_or_else(|err| {
+                    eprintln!("Error getting frames: {}", err);
+                    std::process::exit(1);
+                })
                 .iter()
                 .filter(|frame| {
                     frame.topic == Some(topic.to_string())
@@ -199,39 +228,47 @@ fn main() {
                 signal_hook::iterator::Signals::new(signal_hook::consts::TERM_SIGNALS).unwrap();
 
             loop {
-                let frames = xs_lib::store_cat(&env, last_id);
-                for frame in frames {
-                    last_id = Some(frame.id);
+                match xs_lib::store_cat(&env, last_id) {
+                    Ok(frames) => {
+                        for frame in frames {
+                            last_id = Some(frame.id);
 
-                    if frame.topic != Some(topic.to_string())
-                        || frame.attribute != Some(".request".into())
-                    {
-                        continue;
-                    }
+                            if frame.topic != Some(topic.to_string())
+                                || frame.attribute != Some(".request".into())
+                            {
+                                continue;
+                            }
 
-                    let mut p = std::process::Command::new(command)
-                        .args(args)
-                        .stdin(std::process::Stdio::piped())
-                        .stdout(std::process::Stdio::piped())
-                        .spawn()
-                        .expect("failed to spawn");
-                    {
-                        let mut stdin = p.stdin.take().expect("failed to take stdin");
-                        stdin.write_all(frame.data.as_bytes()).unwrap();
+                            let mut p = std::process::Command::new(command)
+                                .args(args)
+                                .stdin(std::process::Stdio::piped())
+                                .stdout(std::process::Stdio::piped())
+                                .spawn()
+                                .expect("failed to spawn");
+                            {
+                                let mut stdin = p.stdin.take().expect("failed to take stdin");
+                                stdin.write_all(frame.data.as_bytes()).unwrap();
+                            }
+                            let res = p.wait_with_output().unwrap();
+                            let data = String::from_utf8(res.stdout).unwrap();
+                            let res = xs_lib::ResponseFrame {
+                                source_id: frame.id,
+                                data,
+                            };
+                            let data = serde_json::to_string(&res).unwrap();
+                            let _ = xs_lib::store_put(
+                                &env,
+                                Some(topic.clone()),
+                                Some(".response".into()),
+                                data,
+                            )
+                            .unwrap_or_else(|err| {
+                                eprintln!("Error putting response: {}", err);
+                                std::process::exit(1);
+                            });
+                        }
                     }
-                    let res = p.wait_with_output().unwrap();
-                    let data = String::from_utf8(res.stdout).unwrap();
-                    let res = xs_lib::ResponseFrame {
-                        source_id: frame.id,
-                        data,
-                    };
-                    let data = serde_json::to_string(&res).unwrap();
-                    let _ = xs_lib::store_put(
-                        &env,
-                        Some(topic.clone()),
-                        Some(".response".into()),
-                        data,
-                    );
+                    Err(err) => eprintln!("Error getting frames: {}", err),
                 }
 
                 std::thread::sleep(std::time::Duration::from_millis(POLL_INTERVAL));

@@ -26,13 +26,12 @@ pub struct ResponseFrame {
     pub data: String,
 }
 
-pub fn store_open(path: &std::path::Path) -> lmdb::Environment {
-    std::fs::create_dir_all(path).unwrap();
+pub fn store_open(path: &std::path::Path) -> Result<lmdb::Environment, Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(path)?;
     let env = lmdb::Environment::new()
         .set_map_size(10 * 10485760)
-        .open(path)
-        .unwrap();
-    env
+        .open(path)?;
+    Ok(env)
 }
 
 pub fn store_put(
@@ -40,7 +39,7 @@ pub fn store_put(
     topic: Option<String>,
     attribute: Option<String>,
     data: String,
-) -> scru128::Scru128Id {
+) -> Result<scru128::Scru128Id, Box<dyn std::error::Error>> {
     let id = scru128::new();
 
     let frame = Frame {
@@ -49,38 +48,41 @@ pub fn store_put(
         attribute,
         data: data.trim().to_string(),
     };
-    let frame = serde_json::to_vec(&frame).unwrap();
+    let frame = serde_json::to_vec(&frame)?;
 
-    let db = env.open_db(None).unwrap();
-    let mut txn = env.begin_rw_txn().unwrap();
+    let db = env.open_db(None)?;
+    let mut txn = env.begin_rw_txn()?;
     txn.put(
         db,
-        // if I understand the docs right, this should be 'to_ne_bytes', but that doesn't
-        // work
         &id.to_u128().to_be_bytes(),
         &frame,
         lmdb::WriteFlags::empty(),
-    )
-    .unwrap();
-    txn.commit().unwrap();
+    )?;
+    txn.commit()?;
 
-    id
+    Ok(id)
 }
 
-pub fn store_get(env: &lmdb::Environment, id: scru128::Scru128Id) -> Option<Frame> {
-    let db = env.open_db(None).unwrap();
-    let txn = env.begin_ro_txn().unwrap();
+pub fn store_get(
+    env: &lmdb::Environment,
+    id: scru128::Scru128Id,
+) -> Result<Option<Frame>, Box<dyn std::error::Error>> {
+    let db = env.open_db(None)?;
+    let txn = env.begin_ro_txn()?;
     match txn.get(db, &id.to_u128().to_be_bytes()) {
-        Ok(value) => Some(serde_json::from_slice(value).unwrap()),
-        Err(lmdb::Error::NotFound) => None,
-        Err(err) => panic!("store_get: {:?}", err),
+        Ok(value) => Ok(Some(serde_json::from_slice(value)?)),
+        Err(lmdb::Error::NotFound) => Ok(None),
+        Err(err) => Err(Box::new(err)),
     }
 }
 
-pub fn store_cat(env: &lmdb::Environment, last_id: Option<scru128::Scru128Id>) -> Vec<Frame> {
-    let db = env.open_db(None).unwrap();
-    let txn = env.begin_ro_txn().unwrap();
-    let mut c = txn.open_ro_cursor(db).unwrap();
+pub fn store_cat(
+    env: &lmdb::Environment,
+    last_id: Option<scru128::Scru128Id>,
+) -> Result<Vec<Frame>, Box<dyn std::error::Error>> {
+    let db = env.open_db(None)?;
+    let txn = env.begin_ro_txn()?;
+    let mut c = txn.open_ro_cursor(db)?;
     let it = match last_id {
         Some(key) => {
             let mut i = c.iter_from(key.to_u128().to_be_bytes());
@@ -89,11 +91,11 @@ pub fn store_cat(env: &lmdb::Environment, last_id: Option<scru128::Scru128Id>) -
         }
         None => c.iter_start(),
     };
-    it.map(|item| -> Frame {
-        let (_, value) = item.unwrap();
-        serde_json::from_slice(value).unwrap()
+    it.map(|item| -> Result<Frame, Box<dyn std::error::Error>> {
+        let (_, value) = item?;
+        Ok(serde_json::from_slice(value)?)
     })
-    .collect()
+    .collect::<Result<Vec<_>, _>>()
 }
 
 #[cfg(test)]
@@ -108,12 +110,12 @@ mod tests {
     #[test]
     fn test_store() {
         let d = TempDir::new().unwrap();
-        let env = store_open(&d.path());
+        let env = store_open(&d.path()).unwrap();
 
-        let id = store_put(&env, None, None, "foo".into());
-        assert_eq!(store_cat(&env, None).len(), 1);
+        let id = store_put(&env, None, None, "foo".into()).unwrap();
+        assert_eq!(store_cat(&env, None).unwrap().len(), 1);
 
-        let frame = store_get(&env, id).unwrap();
+        let frame = store_get(&env, id).unwrap().unwrap();
         assert_eq!(
             frame,
             Frame {
@@ -125,7 +127,7 @@ mod tests {
         );
 
         // skip with last_id
-        assert_eq!(store_cat(&env, Some(id)).len(), 0);
+        assert_eq!(store_cat(&env, Some(id)).unwrap().len(), 0);
     }
 
     use std::io::BufReader;
